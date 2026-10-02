@@ -1,4 +1,4 @@
-const VERSION = 'cicloapp-pwa-v1.0.1';
+const VERSION = 'cicloapp-pwa-v1.0.2';
 const APP_CACHE = `${VERSION}-app`;
 const STATIC_CACHE = `${VERSION}-static`;
 const TILE_CACHE = `${VERSION}-tiles`;
