@@ -1,4 +1,4 @@
-const VERSION = 'cicloapp-pwa-v1.0.0';
+const VERSION = 'cicloapp-pwa-v1.0.1';
 const APP_CACHE = `${VERSION}-app`;
 const STATIC_CACHE = `${VERSION}-static`;
 const TILE_CACHE = `${VERSION}-tiles`;
@@ -7,9 +7,9 @@ const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/apple-touch-icon.png'
+  './icon-192.png',
+  './icon-512.png',
+  './apple-touch-icon.png'
 ];
 
 self.addEventListener('install', event => {
