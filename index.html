@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+        <!-- Firebase SDKs -->
+        <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-auth-compat.js"></script>
+        <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>CicloApp Pro - Editor GPX</title>
+    <!-- PWA / iOS -->
+    <meta name="theme-color" content="#4CAF50">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CicloApp">
+    <meta name="format-detection" content="telephone=no">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+            /* Reservar espacio para la barra de estado (notch/status bar) en iOS */
+            padding-top: env(safe-area-inset-top);
+        }
+        /* El mapa ocupa desde el safe-area superior hasta el inferior (evita barras blancas) */
+        #map {
+            position: fixed;
+            top: env(safe-area-inset-top);
+            left: 0;
+            right: 0;
+            bottom: env(safe-area-inset-bottom);
+            background-color: #000;
+            box-sizing: border-box;
+        }
+
+        #distance-indicator {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95); padding: 10px 25px;
+            border-radius: 30px; z-index: 1100; display: none; align-items: center; gap: 10px;
+            font-weight: bold; color: #2c3e50; border: 2px solid #4CAF50;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .dist-val { font-size: 22px; color: #1b5e20; }
+
+        .fab-container {
+            position: fixed; bottom: calc(30px + env(safe-area-inset-bottom)); right: 30px;
+            display: flex; flex-direction: column; gap: 12px;
+            z-index: 1000; align-items: flex-end;
+        }
+
+        .fab {
+            width: 55px; height: 55px; background-color: white; color: #2c3e50;
+            border-radius: 50%; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .edit-fab { width: 45px; height: 45px; font-size: 16px; display: none; transform: scale(0); }
+        .fab.show { display: flex; transform: scale(1); }
+        .fab.active { background-color: #4CAF50; color: white; }
+        .fab:disabled { background-color: #eee; color: #bbb; cursor: not-allowed; }
+
+        #menuBtn { position: fixed; top: calc(20px + env(safe-area-inset-top)); left: 20px; z-index: 1100; background: white; }
+
+        .sidebar {
+            position: fixed; top: 0; left: -100vw;
+            width: 100vw;
+            height: calc(100vh - env(safe-area-inset-bottom));
+            background: white; z-index: 1050;
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            padding: 20px; display: flex; flex-direction: column;
+            box-sizing: border-box;
+            overflow-x: hidden;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .sidebar.open { left: 0; box-shadow: 5px 0 15px rgba(0,0,0,0.3); }
+        .sidebar h2 {border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+        
+        .route-list { flex-grow: 1; overflow-y: auto; padding-bottom: 80px; }
+        .route-item {
+            background: #fdfdfd; padding: 12px; margin-bottom: 12px; border-radius: 10px;
+            border-left: 5px solid #4CAF50; border-bottom: 1px solid #4CAF50; display: flex; justify-content: space-between; align-items: center;
+        }
+        .route-item.selected { background: #f3f3f3; }
+        
+        .import-container { position: absolute; bottom: 50px; left: 20px; right: 20px; }
+        .btn-import {
+            width: 100%; background: #4CAF50; color: white; border: none;
+            padding: 12px; border-radius: 8px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+            font-weight: bold;
+        }
+        .leaflet-routing-container { display: none; }
+    </style>
+</head>
+<body>
+    <!-- Barra de usuario/login dentro del panel lateral -->
+    <div id="sidebar" class="sidebar">
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:10px;">
+            <button id="userBtn" style="width:55px;height:55px;border-radius:50%;background:#4CAF50;border:none;display:flex;align-items:center;justify-content:center;color:white;font-size:22px;cursor:pointer;overflow:hidden;box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);">
+                <img id="userAvatar" src="" alt="avatar" style="width:55px;height:55px;aspect-ratio:1/1;object-fit:cover;display:none;border-radius:50%;" />
+                <i id="userIcon" class="fa-solid fa-user"></i>
+            </button>
+        </div>
+        <h2 style="margin-top: 0px;margin-bottom: 10px;"><i class="fa-solid fa-person-biking"></i> Mis Rutas</h2>
+        <div id="routeList" class="route-list"></div>
+        <div class="import-container">
+            <input type="file" id="gpxInput" accept=".gpx" style="display: none;" onchange="importGPXToEditor(this)">
+            <button class="btn-import" onclick="document.getElementById('gpxInput').click()">
+                <i class="fa-solid fa-file-arrow-up"></i> Cargar archivo GPX
+            </button>
+        </div>
+        <!-- Popup usuario -->
+        <div id="userPopup" style="display:none; position:absolute; right:20px; top:20px; background:white; border-radius:12px; box-shadow:0 4px 16px rgba(0,0,0,0.18); padding:18px 22px; z-index:1201; min-width:180px;">
+            <span id="userInfo" style="color:#2c3e50; font-size:16px;"></span><br>
+            <button id="loginBtn" style="background:#4CAF50;color:white;border:none;border-radius:6px;padding:7px 18px;font-weight:bold;cursor:pointer;margin-top:12px;">Iniciar sesión</button>
+            <button id="logoutBtn" style="background:#e74c3c;color:white;border:none;border-radius:6px;padding:7px 18px;font-weight:bold;cursor:pointer;display:none;margin-top:12px;">Cerrar sesión</button>
+        </div>
+    </div>
+
+    <div id="distance-indicator">
+        <i class="fa-solid fa-arrows-left-right" style="color: #4CAF50;"></i>
+        <span id="dist-value" class="dist-val">0.00</span>
+        <span id="dist-unit" class="dist-unit">km</span>
+    </div>
+
+    <div id="map"></div>
+
+    <button id="menuBtn" class="fab" onclick="toggleSidebar()"><i class="fa-solid fa-bars"></i></button>
+
+
+    <div class="fab-container">
+        <button id="saveBtn" class="fab edit-fab" onclick="saveToLocal()" title="Guardar"><i class="fa-solid fa-floppy-disk"></i></button>
+        <button id="downloadBtn" class="fab edit-fab" onclick="downloadCurrentGPX()" title="Descargar"><i class="fa-solid fa-file-arrow-down"></i></button>
+            <!-- El botón de compartir solo estará en la lista de rutas guardadas -->
+        <button id="clearBtn" class="fab edit-fab" onclick="clearRoute()"><i class="fa-solid fa-trash-can"></i></button>
+        <button id="undoBtn" class="fab edit-fab" onclick="undo()" disabled><i class="fa-solid fa-rotate-left"></i></button>
+        <button id="penBtn" class="fab edit-fab" onclick="togglePenMode()" title="Modo pluma"><i class="fa-solid fa-magnet"></i></button>
+        <button id="routeBtn" class="fab" onclick="toggleRouteMode()"><i class="fa-solid fa-route"></i></button>
+        <button class="fab" onclick="findMe()"><i class="fa-solid fa-location-crosshairs"></i></button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+
+
+    <script>
+                    // Cambiar avatar del usuario en el botón
+                    function updateUserAvatar(user) {
+                        const avatar = document.getElementById('userAvatar');
+                        const icon = document.getElementById('userIcon');
+                        if (user && user.photoURL) {
+                            avatar.src = user.photoURL;
+                            avatar.style.display = 'block';
+                            icon.style.display = 'none';
+                        } else {
+                            avatar.style.display = 'none';
+                            icon.style.display = 'block';
+                        }
+                    }
+                // Mostrar/ocultar popup usuario
+                document.addEventListener('DOMContentLoaded', function() {
+                    const userBtn = document.getElementById('userBtn');
+                    const userPopup = document.getElementById('userPopup');
+                    userBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        userPopup.style.display = userPopup.style.display === 'none' ? 'block' : 'none';
+                    });
+                    // Permitir cerrar el popup haciendo clic fuera
+                    document.addEventListener('click', function(e) {
+                        if (!userPopup.contains(e.target) && !userBtn.contains(e.target)) {
+                            userPopup.style.display = 'none';
+                        }
+                    });
+                });
+            // --- Firebase config ---
+            const firebaseConfig = {
+                apiKey: "AIzaSyCiBUVFxkE4_21VKZxZsAiz7j6GTz3hcHw",
+                authDomain: "cicloapp-4b1ba.firebaseapp.com",
+                projectId: "cicloapp-4b1ba",
+                storageBucket: "cicloapp-4b1ba.firebasestorage.app",
+                messagingSenderId: "226595748966",
+                appId: "1:226595748966:web:5d54c10b95e63fe27dc1a7",
+                measurementId: "G-G2EW0PJ5GS"
+            };
+            firebase.initializeApp(firebaseConfig);
+            const auth = firebase.auth();
+            const db = firebase.firestore();
+
+            let currentUser = null;
+            let cloudRoutes = [];
+
+            // --- Login/Logout UI ---
+            const loginBtn = document.getElementById('loginBtn');
+            const logoutBtn = document.getElementById('logoutBtn');
+            const userInfo = document.getElementById('userInfo');
+
+            loginBtn.onclick = async () => {
+                const provider = new firebase.auth.GoogleAuthProvider();
+                auth.signInWithPopup(provider);
+            };
+            logoutBtn.onclick = async () => {
+                await auth.signOut();
+            };
+
+            auth.onAuthStateChanged(async (user) => {
+                currentUser = user;
+                updateUserAvatar(user);
+                if (user) {
+                    userInfo.innerHTML = `<i class='fa-solid fa-user'></i> ${user.displayName || user.email}`;
+                    loginBtn.style.display = 'none';
+                    logoutBtn.style.display = 'inline-block';
+                    await loadCloudRoutes();
+                } else {
+                    userInfo.innerHTML = 'No autenticado';
+                    loginBtn.style.display = 'inline-block';
+                    logoutBtn.style.display = 'none';
+                    cloudRoutes = [];
+                    renderRouteList();
+                }
+            });
+
+            // --- Guardar ruta en Firestore ---
+            async function saveToCloud(routeObj) {
+                if (!currentUser) return;
+                const uid = currentUser.uid;
+                try {
+                    // Asegurar que los campos estén bien formateados
+                    const safeRoute = {
+                        name: routeObj.name,
+                        date: routeObj.date,
+                        points: Array.isArray(routeObj.points) ? routeObj.points : [],
+                        fullGeometry: Array.isArray(routeObj.fullGeometry) ? routeObj.fullGeometry : [],
+                        distance: routeObj.distance
+                    };
+                    const docRef = await db.collection('users').doc(uid).collection('routes').add(safeRoute);
+                    // Guardar el id del documento en el objeto
+                    await docRef.update({ id: docRef.id });
+                    setTimeout(loadCloudRoutes, 500);
+                } catch (e) {
+                    console.error('Error al guardar en Firestore:', e);
+                    showErrorMsg('Error al guardar en Firestore: ' + e.message, true);
+                }
+            }
+            
+
+            // --- Cargar rutas de Firestore ---
+            async function loadCloudRoutes() {
+                if (!currentUser) { cloudRoutes = []; renderRouteList(); return; }
+                const uid = currentUser.uid;
+                try {
+                    const snap = await db.collection('users').doc(uid).collection('routes').orderBy('date', 'desc').get();
+                    cloudRoutes = snap.docs.map(doc => {
+                        const data = doc.data();
+                        // Asegurar que los campos estén presentes
+                        return {
+                            id: doc.id,
+                            name: data.name || 'Ruta',
+                            date: data.date || '',
+                            points: Array.isArray(data.points) ? data.points : [],
+                            fullGeometry: Array.isArray(data.fullGeometry) ? data.fullGeometry : [],
+                            distance: data.distance || ''
+                        };
+                    });
+                    renderRouteList();
+                } catch (e) {
+                    console.error('Error al cargar rutas de Firestore:', e);
+                }
+            }
+            
+
+            // --- Sobrescribir saveToLocal para guardar en Firestore ---
+            function saveToLocal() {
+                if (combinedPoints.length < 2) return;
+                const dist = document.getElementById('dist-value').innerText + ' ' + document.getElementById('dist-unit').innerText;
+                const name = prompt("Nombre de la ruta:", `Ruta ${dist}`);
+                if (!name) return;
+                const routeObj = {
+                    name: name,
+                    date: new Date().toISOString(),
+                    points: combinedPoints,
+                    fullGeometry: lastFullRoute,
+                    distance: dist
+                };
+                if (currentUser) {
+                    saveToCloud(routeObj);
+                } else {
+                    // localStorage fallback
+                    const routes = JSON.parse(localStorage.getItem('myRoutes') || '[]');
+                    routes.push({ id: Date.now(), ...routeObj });
+                    localStorage.setItem('myRoutes', JSON.stringify(routes));
+                    renderRouteList();
+                }
+            }
+    // Compartir a Garmin Connect (Web Share API o fallback)
+    function shareToGarmin() {
+        if (!lastFullRoute || lastFullRoute.length < 2) return;
+        const filename = `Ruta_${Date.now()}.gpx`;
+        let gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="CicloApp" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${filename}</name><trkseg>`;
+        lastFullRoute.forEach(pt => { gpx += `<trkpt lat="${pt.lat}" lon="${pt.lng}"></trkpt>`; });
+        gpx += `</trkseg></trk></gpx>`;
+
+        // Web Share API con archivos (iOS Safari 13.4+)
+        if (navigator.canShare && window.Blob && window.File && navigator.canShare({ files: [new File([gpx], filename, { type: 'application/gpx+xml' })] })) {
+            const file = new File([gpx], filename, { type: 'application/gpx+xml' });
+            navigator.share({
+                title: 'Compartir ruta GPX',
+                text: 'Comparte tu ruta a Garmin Connect u otra app compatible.',
+                files: [file]
+            }).catch(() => {});
+            return;
+        }
+        // Fallback: descarga directa
+        const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+    }
+const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 2);        L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 21 }).addTo(map);
+
+        let userMarker, routeControl = null;
+        let isRouteMode = false;
+        let isPenMode = false; 
+        let penMarkers = [];
+        let combinedPoints = []; 
+        let suppressRouteUpdate = false;
+        let routerInstance = null;
+        let combinedSegmentLayers = [];
+        let lastRouteWaypoints = []; // cache of last route-mode waypoint positions
+        let lastFullRoute = [];
+        let historyStack = [{ points: [], geometry: [] }]; 
+        let historyStep = 0;
+        let selectedRouteId = null;
+
+        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+
+        function toggleRouteMode() {
+            const btn = document.getElementById('routeBtn');
+            const penBtn = document.getElementById('penBtn');
+            isRouteMode = !isRouteMode;
+            if (isRouteMode) {
+                isPenMode = false; 
+                penBtn.classList.remove('active');
+                penBtn.querySelector('i').className = 'fa-solid fa-magnet';
+                btn.classList.add('active');
+                document.getElementById('distance-indicator').style.display = 'flex';
+                document.querySelectorAll('.edit-fab').forEach(b => b.classList.add('show'));
+                // Asegurar que el control de routing esté inicializado y que los waypoints se apliquen
+                initRouting();
+                const routeWaypoints = combinedPoints.filter(p => p.mode === 'route').map(p => L.latLng(p.lat, p.lng));
+                // Restaurar marcadores de modo "pen" que estuvieron ocultos al cargar la ruta
+                combinedPoints.forEach((p, idx) => {
+                    if (p && p.mode === 'pen' && !penMarkers[idx]) {
+                        createPenMarker(idx);
+                    }
+                });
+                // Establecer waypoints con un pequeño retardo para evitar condiciones de carrera
+                setTimeout(() => { setRouteWaypointsSafely(routeWaypoints); }, 80);
+            } else {
+                btn.classList.remove('active');
+                document.getElementById('distance-indicator').style.display = 'none';
+                document.querySelectorAll('.edit-fab').forEach(b => b.classList.remove('show'));
+                // Al salir del modo ruta, ocultar/limpiar marcadores pen para evitar que queden visibles
+                try { penMarkers.forEach(m => map.removeLayer(m)); } catch (e) {}
+                penMarkers = [];
+                // Limpiar también los waypoints/markers del control de ruta (modo imán)
+                if (routeControl) {
+                    try { routeControl.setWaypoints([]); } catch (e) {}
+                    lastRouteWaypoints = [];
+                }
+            }
+        }
+
+        function togglePenMode() {
+            const btn = document.getElementById('penBtn');
+            isPenMode = !isPenMode;
+            btn.classList.toggle('active', isPenMode);
+            btn.querySelector('i').className = isPenMode ? 'fa-solid fa-pen' : 'fa-solid fa-magnet';
+        }
+
+        map.on('click', async (e) => {
+            if (!isRouteMode) return;
+            const currentClickMode = isPenMode ? 'pen' : 'route';
+            const prevPoint = combinedPoints.length > 0 ? combinedPoints[combinedPoints.length - 1] : null;
+            const newPoint = { lat: e.latlng.lat, lng: e.latlng.lng, mode: currentClickMode };
+            combinedPoints.push(newPoint);
+
+            if (prevPoint) {
+                let latlngs = [];
+                if (currentClickMode === 'route' && prevPoint.mode === 'route') {
+                    const route = await routeBetweenPoints(prevPoint, newPoint);
+                    latlngs = (route && route.coordinates) ? route.coordinates : [prevPoint, newPoint];
+                } else {
+                    latlngs = [prevPoint, newPoint];
+                }
+                const line = L.polyline(latlngs, { color: '#4CAF50', weight: 6, opacity: 0.9 }).addTo(map);
+                const segIndex = combinedPoints.length - 2;
+                combinedSegmentLayers[segIndex] = line;
+                if (lastFullRoute.length === 0) lastFullRoute = latlngs.slice();
+                else lastFullRoute = lastFullRoute.concat(latlngs.slice(1));
+            } else { lastFullRoute = [newPoint]; }
+
+            if (currentClickMode === 'pen') {
+                const penIndex = combinedPoints.length - 1;
+                createPenMarker(penIndex);
+            }
+
+            if (routeControl) {
+                const rpts = combinedPoints.filter(p => p.mode === 'route').map(p => L.latLng(p.lat, p.lng));
+                setRouteWaypointsSafely(rpts);
+            }
+            updateDistance(calculateTotalDistance(lastFullRoute));
+            saveState();
+        });
+
+        // --- OPTIMIZACIÓN DE CARGA GPX (CARGA INSTANTÁNEA) ---
+        function importGPXToEditor(input) {
+            const file = input.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const parser = new DOMParser();
+                const gpx = parser.parseFromString(e.target.result, "text/xml");
+                const trkpts = gpx.querySelectorAll("trkpt");
+                
+                let allCoords = [];
+                trkpts.forEach(pt => allCoords.push({
+                    lat: parseFloat(pt.getAttribute("lat")),
+                    lng: parseFloat(pt.getAttribute("lon"))
+                }));
+
+                if (allCoords.length < 2) return;
+
+                // 1. Usar la geometría original directamente (Sin llamar a la API)
+                lastFullRoute = allCoords;
+
+                // 2. Crear puntos de control simplificados para que el editor sea manejable
+                // Tomamos 1 punto cada 50 para que no sea lento, pero mantenga la forma
+                let step = Math.max(1, Math.floor(allCoords.length / 30));
+                combinedPoints = allCoords.filter((_, i) => i % step === 0).map(p => ({...p, mode: 'route'}));
+
+                // Asegurar que el último punto esté incluido
+                if (combinedPoints[combinedPoints.length-1] !== allCoords[allCoords.length-1]) {
+                    combinedPoints.push({...allCoords[allCoords.length-1], mode: 'route'});
+                }
+
+                if (!isRouteMode) toggleRouteMode();
+
+                // 3. Aplicar estado visual inmediatamente
+                applyState({ points: combinedPoints, geometry: lastFullRoute });
+                
+                map.fitBounds(L.latLngBounds(allCoords.map(p => [p.lat, p.lng])));
+                toggleSidebar();
+                saveState();
+            };
+            reader.readAsText(file);
+        }
+
+        async function routeBetweenPoints(a, b) {
+            try {
+                if (!routerInstance) return null;
+                return await new Promise((resolve) => {
+                    const wp = [L.Routing.waypoint(L.latLng(a.lat, a.lng)), L.Routing.waypoint(L.latLng(b.lat, b.lng))];
+                    routerInstance.route(wp, (err, routes) => {
+                        if (err || !routes || routes.length === 0) resolve(null);
+                        else resolve(routes[0]);
+                    });
+                });
+            } catch (e) { return null; }
+        }
+
+        function getRouteModeIndices() {
+            const idx = [];
+            for (let i = 0; i < combinedPoints.length; i++) if (combinedPoints[i].mode === 'route') idx.push(i);
+            return idx;
+        }
+
+        function findNearestGeometryIndex(pt, geometry) {
+            if (!geometry || geometry.length === 0) return -1;
+            let best = 0; let bestD = Infinity;
+            for (let i = 0; i < geometry.length; i++) {
+                const g = geometry[i];
+                const d = haversineDistance(pt.lat, pt.lng, g.lat, g.lng);
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            return best;
+        }
+
+        async function rebuildSegmentAt(i) {
+            if (i < 0 || i >= combinedPoints.length - 1) return;
+            if (combinedSegmentLayers[i]) { try { map.removeLayer(combinedSegmentLayers[i]); } catch (e) {} }
+            const p1 = combinedPoints[i];
+            const p2 = combinedPoints[i+1];
+            let latlngs = [];
+            if (p1.mode === 'route' && p2.mode === 'route') {
+                const route = await routeBetweenPoints(p1, p2);
+                latlngs = (route && route.coordinates) ? route.coordinates : [ {lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng} ];
+            } else {
+                latlngs = [ {lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng} ];
+            }
+            const line = L.polyline(latlngs, { color: '#4CAF50', weight: 6, opacity: 0.9 }).addTo(map);
+            combinedSegmentLayers[i] = line;
+        }
+
+        function createPenMarker(index) {
+            const p = combinedPoints[index];
+            if (!p) return null;
+            const icon = L.divIcon({ className: '', html: `<div style="width:12px;height:12px;border-radius:50%;background:#4CAF50;border:2px solid white;"></div>`, iconSize: [12,12], iconAnchor: [6,6] });
+            const marker = L.marker([p.lat, p.lng], { icon: icon, draggable: true }).addTo(map);
+            marker._penIndex = index;
+            marker.on('dragend', async function(e) {
+                const ll = marker.getLatLng();
+                const idx = marker._penIndex;
+                if (typeof idx !== 'number') return;
+                combinedPoints[idx].lat = ll.lat;
+                combinedPoints[idx].lng = ll.lng;
+                // rebuild adjacent segments (straight lines for pen segments)
+                await rebuildSegmentAt(idx - 1);
+                await rebuildSegmentAt(idx);
+                // rebuild lastFullRoute from segment layers
+                let composed = [];
+                for (let i = 0; i < combinedSegmentLayers.length; i++) {
+                    const llarr = combinedSegmentLayers[i]?.getLatLngs?.() || [];
+                    const arr = llarr.map(x => ({ lat: x.lat, lng: x.lng }));
+                    if (arr.length === 0) continue;
+                    if (composed.length === 0) composed = composed.concat(arr);
+                    else composed = composed.concat(arr.slice(1));
+                }
+                lastFullRoute = composed;
+                updateDistance(calculateTotalDistance(lastFullRoute));
+                saveState();
+            });
+            penMarkers[index] = marker;
+            return marker;
+        }
+
+        function initRouting() {
+            if (routeControl) return;
+            routerInstance = L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1', profile: 'bicycle' });
+            routeControl = L.Routing.control({
+                waypoints: [], fitSelectedRoutes: false, showAlternatives: false,
+                router: routerInstance,
+                lineOptions: { styles: [{ color: '#4CAF50', opacity: 0 }], addWaypoints: false },
+                createMarker: (i, wp) => L.marker(wp.latLng, { draggable: true, icon: L.divIcon({ className: '', html: `<div style="background:#4CAF50; width:12px; height:12px; border-radius:50%; border:2px solid white;"></div>` }) })
+            }).addTo(map);
+
+            routeControl.on('waypointschanged', async (e) => {
+                if (suppressRouteUpdate) return;
+                const wps = e.waypoints.filter(wp => wp.latLng).map(w => ({ lat: w.latLng.lat, lng: w.latLng.lng }));
+                // map route-mode waypoints back into combinedPoints
+                const routeIdx = getRouteModeIndices();
+                for (let i = 0; i < routeIdx.length; i++) {
+                    const ci = routeIdx[i];
+                    const newWp = wps[i];
+                    if (!newWp) continue;
+                    const oldWp = lastRouteWaypoints[i];
+                    const moved = !oldWp || Math.abs(oldWp.lat - newWp.lat) > 1e-6 || Math.abs(oldWp.lng - newWp.lng) > 1e-6;
+                    combinedPoints[ci] = { lat: newWp.lat, lng: newWp.lng, mode: 'route' };
+                    if (moved) {
+                        await rebuildSegmentAt(ci - 1);
+                        await rebuildSegmentAt(ci);
+                    }
+                }
+                // refresh lastFullRoute from segment layers
+                let composed = [];
+                for (let i = 0; i < combinedSegmentLayers.length; i++) {
+                    const ll = combinedSegmentLayers[i]?.getLatLngs?.() || [];
+                    const arr = ll.map(x => ({ lat: x.lat, lng: x.lng }));
+                    if (arr.length === 0) continue;
+                    if (composed.length === 0) composed = composed.concat(arr);
+                    else composed = composed.concat(arr.slice(1));
+                }
+                lastFullRoute = composed;
+                updateDistance(calculateTotalDistance(lastFullRoute));
+                lastRouteWaypoints = wps.map(p => ({ lat: p.lat, lng: p.lng }));
+                saveState();
+            });
+        }
+
+        async function fullRebuild() {
+            clearAllGreenLines();
+            let composed = [];
+            for (let i = 0; i < combinedPoints.length - 1; i++) {
+                const p1 = combinedPoints[i];
+                const p2 = combinedPoints[i+1];
+                let latlngs = (p1.mode === 'route' && p2.mode === 'route') ? 
+                    (await routeBetweenPoints(p1, p2))?.coordinates || [ {lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng} ] : [{lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng}];
+                const line = L.polyline(latlngs, { color: '#4CAF50', weight: 6, opacity: 0.9 }).addTo(map);
+                combinedSegmentLayers[i] = line;
+                if (composed.length === 0) composed = composed.concat(latlngs);
+                else composed = composed.concat(latlngs.slice(1));
+            }
+            lastFullRoute = composed;
+            updateDistance(calculateTotalDistance(composed));
+        }
+
+        function saveState() { 
+            const snap = { points: JSON.parse(JSON.stringify(combinedPoints)), geometry: JSON.parse(JSON.stringify(lastFullRoute)) };
+            historyStack = historyStack.slice(0, historyStep + 1);
+            historyStack.push(snap); 
+            historyStep++; 
+            updateHistoryButtons(); 
+        }
+
+        function undo() { 
+            if (historyStep > 0) { historyStep--; applyState(historyStack[historyStep]); } 
+        }
+
+        function applyState(state, opts = { showPenMarkers: true, applyRouteWaypoints: true }) {
+            clearAllGreenLines();
+            penMarkers.forEach(m => map.removeLayer(m));
+            penMarkers = [];
+            combinedPoints = JSON.parse(JSON.stringify(state.points));
+            // rebuild segments per pair so combinedSegmentLayers maps to segments
+            const geom = (state.geometry && state.geometry.length >= 2) ? JSON.parse(JSON.stringify(state.geometry)) : null;
+            if (geom) {
+                // map each control point to nearest index in full geometry
+                const idxs = combinedPoints.map(p => findNearestGeometryIndex(p, geom));
+                // ensure monotonic increasing indices
+                for (let i = 1; i < idxs.length; i++) {
+                    if (idxs[i] <= idxs[i-1]) idxs[i] = Math.min(idxs[i-1] + 1, geom.length - 1);
+                }
+                for (let i = 0; i < combinedPoints.length - 1; i++) {
+                    const s = Math.max(0, Math.min(geom.length - 1, idxs[i]));
+                    const e = Math.max(0, Math.min(geom.length - 1, idxs[i+1]));
+                    let segCoords = [];
+                    if (s <= e) segCoords = geom.slice(s, e + 1);
+                    if (!segCoords || segCoords.length < 2) {
+                        const p1 = combinedPoints[i]; const p2 = combinedPoints[i+1];
+                        segCoords = [{ lat: p1.lat, lng: p1.lng }, { lat: p2.lat, lng: p2.lng }];
+                    }
+                    const line = L.polyline(segCoords, { color: '#4CAF50', weight: 6, opacity: 0.9 }).addTo(map);
+                    combinedSegmentLayers[i] = line;
+                }
+                // restore full geometry
+                lastFullRoute = geom;
+            } else {
+                for (let i = 0; i < combinedPoints.length - 1; i++) {
+                    const p1 = combinedPoints[i];
+                    const p2 = combinedPoints[i+1];
+                    const latlngs = (p1.mode === 'route' && p2.mode === 'route') ? [{lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng}] : [{lat: p1.lat, lng: p1.lng}, {lat: p2.lat, lng: p2.lng}];
+                    const line = L.polyline(latlngs, { color: '#4CAF50', weight: 6, opacity: 0.9 }).addTo(map);
+                    combinedSegmentLayers[i] = line;
+                }
+                let composed = [];
+                for (let i = 0; i < combinedSegmentLayers.length; i++) {
+                    const ll = combinedSegmentLayers[i]?.getLatLngs?.() || [];
+                    const arr = ll.map(x => ({ lat: x.lat, lng: x.lng }));
+                    if (arr.length === 0) continue;
+                    if (composed.length === 0) composed = composed.concat(arr);
+                    else composed = composed.concat(arr.slice(1));
+                }
+                lastFullRoute = (composed.length >= 2) ? composed : JSON.parse(JSON.stringify(state.geometry || []));
+            }
+            combinedPoints.forEach((p, idx) => {
+                if (p.mode === 'pen' && opts.showPenMarkers) {
+                    createPenMarker(idx);
+                }
+            });
+            if (routeControl && isRouteMode && opts.applyRouteWaypoints !== false) {
+                const rpts = combinedPoints.filter(p => p.mode === 'route').map(p => L.latLng(p.lat, p.lng));
+                setRouteWaypointsSafely(rpts);
+            }
+            // rebuild lastFullRoute from segment layers
+            let composed = [];
+            for (let i = 0; i < combinedSegmentLayers.length; i++) {
+                const ll = combinedSegmentLayers[i]?.getLatLngs?.() || [];
+                const arr = ll.map(x => ({ lat: x.lat, lng: x.lng }));
+                if (arr.length === 0) continue;
+                if (composed.length === 0) composed = composed.concat(arr);
+                else composed = composed.concat(arr.slice(1));
+            }
+            lastFullRoute = (composed.length >= 2) ? composed : JSON.parse(JSON.stringify(state.geometry || []));
+            updateDistance(calculateTotalDistance(lastFullRoute));
+            updateHistoryButtons();
+        }
+
+        function updateHistoryButtons() {
+            document.getElementById('undoBtn').disabled = (historyStep === 0);
+            document.getElementById('saveBtn').disabled = (combinedPoints.length < 2);
+            document.getElementById('downloadBtn').disabled = (combinedPoints.length < 2);
+        }
+
+        function updateDistance(meters) {
+            const valSpan = document.getElementById('dist-value');
+            if (meters >= 1000) { valSpan.innerText = (meters / 1000).toFixed(2); document.getElementById('dist-unit').innerText = 'km'; }
+            else { valSpan.innerText = Math.round(meters); document.getElementById('dist-unit').innerText = 'm'; }
+        }
+
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371000;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        function calculateTotalDistance(coords) {
+            let total = 0;
+            for (let i = 1; i < coords.length; i++) {
+                total += haversineDistance(coords[i-1].lat, coords[i-1].lng, coords[i].lat, coords[i].lng);
+            }
+            return total;
+        }
+
+        function clearAllGreenLines() { combinedSegmentLayers.forEach(l => map.removeLayer(l)); combinedSegmentLayers = []; }
+
+        function clearRoute() { 
+            if (!confirm("¿Borrar todo?")) return;
+            combinedPoints = []; lastFullRoute = []; clearAllGreenLines();
+            penMarkers.forEach(m => map.removeLayer(m)); penMarkers = [];
+            if (routeControl) routeControl.setWaypoints([]);
+            historyStack = [{ points: [], geometry: [] }]; historyStep = 0; updateHistoryButtons(); updateDistance(0);
+        }
+
+        function setRouteWaypointsSafely(rpts) {
+            if (!routeControl) return;
+            suppressRouteUpdate = true;
+            routeControl.setWaypoints(rpts);
+            try { lastRouteWaypoints = rpts.map(r => ({ lat: r.lat, lng: r.lng })); } catch (e) {}
+            setTimeout(() => { suppressRouteUpdate = false; }, 50);
+        }
+
+        function downloadCurrentGPX() { if (lastFullRoute.length >= 2) generateGPX(lastFullRoute, `Ruta_${Date.now()}`); }
+
+        function generateGPX(coords, filename) {
+            let gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="CicloApp" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${filename}</name><trkseg>`;
+            coords.forEach(pt => { gpx += `<trkpt lat="${pt.lat}" lon="${pt.lng}"></trkpt>`; });
+            gpx += `</trkseg></trk></gpx>`;
+            
+            if (typeof Android !== 'undefined' && Android.downloadGpx) {
+                Android.downloadGpx(gpx, filename);
+            } else {
+                // Fallback for web browser
+                const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${filename.replace(/\s+/g, '_')}.gpx`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        function saveToLocal() {
+            if (combinedPoints.length < 2) return;
+            const dist = document.getElementById('dist-value').innerText + ' ' + document.getElementById('dist-unit').innerText;
+            const name = prompt("Nombre de la ruta:", `Ruta ${dist}`);
+            if (!name) return;
+            const routeObj = {
+                name: name,
+                date: new Date().toISOString(),
+                points: combinedPoints,
+                fullGeometry: lastFullRoute,
+                distance: dist
+            };
+            if (currentUser) {
+                saveToCloud(routeObj);
+            } else {
+                // localStorage fallback
+                const routes = JSON.parse(localStorage.getItem('myRoutes') || '[]');
+                routes.push({ id: Date.now(), ...routeObj });
+                localStorage.setItem('myRoutes', JSON.stringify(routes));
+                renderRouteList();
+            }
+        }
+
+        function renderRouteList() {
+        const list = document.getElementById('routeList');
+        let routes = [];
+        if (currentUser) {
+            routes = cloudRoutes;
+        } else {
+            routes = JSON.parse(localStorage.getItem('myRoutes') || '[]');
+        }
+        list.innerHTML = routes.length === 0 ? '<p style="text-align:center; color:#999; margin-top:20px;">No hay rutas.</p>' : '';
+        // No invertir si ya están ordenadas por fecha descendente
+        routes.forEach(route => {
+            const div = document.createElement('div');
+            div.className = 'route-item' + (selectedRouteId === route.id ? ' selected' : '');
+            // Botón compartir solo si la ruta tiene geometría válida
+            const shareBtn = `<i class='fa-solid fa-share-nodes' title='Compartir a Garmin' style='cursor:pointer; color:#4CAF50; padding:5px;' onclick='shareSavedRouteToGarmin(${JSON.stringify(route.fullGeometry)}, "${route.name}")'></i>`;
+            div.innerHTML = `<div style="cursor:pointer; flex-grow:1" onclick='toggleLoadSavedRoute(${JSON.stringify(route)})'>
+                <strong>${route.name}</strong><br><small><i class="fa-regular fa-calendar-days"></i> ${route.date}</small></div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    ${shareBtn}
+                    <i class="fa-solid fa-file-arrow-down" title="Descargar" style="cursor:pointer; color:#1565c0; padding:5px;" onclick='generateGPX(${JSON.stringify(route.fullGeometry)}, "${route.name}")'></i>
+                    <i class="fa-solid fa-pen-to-square" title="Editar" style="cursor:pointer; color:#2e7d32; padding:5px;" onclick='editSavedRoute(${JSON.stringify(route)})'></i>
+                    <i class="fa-solid fa-trash-can" title="Eliminar" style="cursor:pointer; color:#e74c3c; padding:5px;" onclick="deleteRoute(${route.id})"></i>
+                </div>`;
+            list.appendChild(div);
+        });
+    }
+
+        // Compartir desde la lista de rutas guardadas
+        function shareSavedRouteToGarmin(geometry, name) {
+            if (!geometry || geometry.length < 2) return;
+            const cleanName = (name || 'Ruta').replace(/\s+/g, '_');
+            const filename = `${cleanName}.gpx`;
+            let gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="CicloApp" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${filename}</name><trkseg>`;
+            geometry.forEach(pt => { gpx += `<trkpt lat="${pt.lat}" lon="${pt.lng}"></trkpt>`; });
+            gpx += `</trkseg></trk></gpx>`;
+
+            if (navigator.canShare && window.Blob && window.File && navigator.canShare({ files: [new File([gpx], filename, { type: 'application/gpx+xml' })] })) {
+                const file = new File([gpx], filename, { type: 'application/gpx+xml' });
+                navigator.share({
+                    title: 'Compartir ruta GPX',
+                    text: 'Comparte tu ruta a Garmin Connect u otra app compatible.',
+                    files: [file]
+                }).catch(() => {});
+                return;
+            }
+            // Fallback: descarga directa
+            const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        }
+
+        // Cargar una ruta directamente en modo edición (mostrar marcadores pen y waypoints)
+        function editSavedRoute(route) {
+            selectedRouteId = route.id;
+            // Aplicar estado y mostrar marcadores pluma
+            applyState({ points: route.points, geometry: route.fullGeometry }, { showPenMarkers: true, applyRouteWaypoints: false });
+            if (route.fullGeometry) map.fitBounds(L.latLngBounds(route.fullGeometry.map(p => [p.lat, p.lng])));
+            // Activar modo ruta si no está activo
+            if (!isRouteMode) toggleRouteMode();
+            // Aplicar waypoints del modo imán después de activar (pequeño retraso para evitar carreras)
+            setTimeout(() => {
+                try {
+                    const rpts = route.points.filter(p => p.mode === 'route').map(p => L.latLng(p.lat, p.lng));
+                    setRouteWaypointsSafely(rpts);
+                } catch (e) {
+                    console.error('Error al guardar en Firestore:', e);
+                }
+            }, 150);
+            renderRouteList();
+            toggleSidebar();
+        }
+
+        function loadSavedRoute(route) {
+            selectedRouteId = route.id;
+            // No mostrar marcadores pluma ni crear waypoints del modo imán al cargar una ruta guardada
+            applyState({ points: route.points, geometry: route.fullGeometry }, { showPenMarkers: false, applyRouteWaypoints: false });
+            if (route.fullGeometry) map.fitBounds(L.latLngBounds(route.fullGeometry.map(p => [p.lat, p.lng])));
+            // Mostrar el indicador de distancia incluso si no estamos en el modo de creación
+            try {
+                const geom = route.fullGeometry && route.fullGeometry.length ? route.fullGeometry : (lastFullRoute || []);
+                updateDistance(calculateTotalDistance(geom));
+                document.getElementById('distance-indicator').style.display = (geom && geom.length >= 2) ? 'flex' : 'none';
+            } catch (e) { /* silencioso si algo falla */ }
+            renderRouteList();
+            toggleSidebar();
+        }
+
+        function hideLoadedRoute() {
+            // Oculta visualmente la ruta cargada sin borrar los datos
+            try { clearAllGreenLines(); } catch (e) {}
+            try { penMarkers.forEach(m => map.removeLayer(m)); } catch (e) {}
+            penMarkers = [];
+            try { if (routeControl) routeControl.setWaypoints([]); } catch (e) {}
+            try { document.getElementById('distance-indicator').style.display = 'none'; } catch (e) {}
+            selectedRouteId = null;
+            renderRouteList();
+            // Cerrar la barra lateral como cuando se carga una ruta
+            try { toggleSidebar(); } catch (e) {}
+        }
+
+        function toggleLoadSavedRoute(route) {
+            try {
+                if (selectedRouteId === route.id) {
+                    hideLoadedRoute();
+                } else {
+                    loadSavedRoute(route);
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function deleteRoute(id) { 
+            if (!confirm("¿Eliminar?")) return;
+        if (currentUser) {
+            // Eliminar de Firestore
+            db.collection('users').doc(currentUser.uid).collection('routes').doc(id).delete().then(() => {
+                if (selectedRouteId === id) hideLoadedRoute();
+                loadCloudRoutes();
+            });
+        } else {
+            let r = JSON.parse(localStorage.getItem('myRoutes') || '[]');
+            r = r.filter(x => x.id !== id);
+            localStorage.setItem('myRoutes', JSON.stringify(r));
+            if (selectedRouteId === id) hideLoadedRoute();
+            renderRouteList();
+        }
+        }
+
+        function findMe() {
+            navigator.geolocation.getCurrentPosition((p) => {
+                const ll = [p.coords.latitude, p.coords.longitude];
+                if (userMarker) userMarker.setLatLng(ll);
+                else userMarker = L.circleMarker(ll, {radius: 8, fillColor: "#2196F3", color: "white", weight: 2, fillOpacity: 0.9}).addTo(map);
+                map.flyTo(ll, 16);
+            }, () => alert("GPS no disponible"), { enableHighAccuracy: true });
+        }
+
+        renderRouteList();
+    </script>
+
+    <script>
+      // Registro del Service Worker para modo PWA/offline.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./service-worker.js').catch(err => {
+            console.warn('No se pudo registrar el Service Worker:', err);
+          });
+        });
+      }
+    </script>
+
+</body>
+</html>
